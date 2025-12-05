@@ -1,0 +1,109 @@
+name: Hot News Crawler
+on:
+  schedule:
+    # ⚠️ 重要提示：我们使用的是 GitHub 官方提供的资源来进行的推送，而每个账号的资源是限额的
+    # 为了不被官方判定为滥用而面临封号的风险，不建议设置比半小时更短的执行间隔
+    #
+    # Cron 表达式示例（注意：GitHub Actions 使用 UTC 时间，北京时间需要减 8 小时）:
+    # - "0 * * * *"         # 每小时整点运行一次（实际有偏差）
+    # - "*/30 * * * *"      # 每 30 分钟执行一次
+    # - "*/30 0-14 * * *"   # 每天 UTC 0:00-14:00（北京时间 8:00-22:00），每 30 分钟运行一次
+    # - "0 0,6,12,18 * * *" # 每天 UTC 0:00,6:00,12:00,18:00（北京时间 8:00,14:00,20:00,次日2:00）
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: crawler-${{ github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: true
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          
+      - name: Verify required files
+        run: |
+          echo "🔍 检查必需的配置文件..."
+          if [ ! -f config/config.yaml ]; then
+            echo "❌ 错误: config/config.yaml 文件不存在"
+            exit 1
+          fi
+          if [ ! -f config/frequency_words.txt ]; then
+            echo "❌ 错误: config/frequency_words.txt 文件不存在"
+            exit 1
+          fi
+          echo "✅ 配置文件检查通过"
+          
+      - name: Run crawler
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DINGTALK_WEBHOOK_URL: ${{ secrets.DINGTALK_WEBHOOK_URL }}
+          WEWORK_WEBHOOK_URL: ${{ secrets.WEWORK_WEBHOOK_URL }}
+          WEWORK_MSG_TYPE: ${{ secrets.WEWORK_MSG_TYPE }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          EMAIL_SMTP_SERVER: ${{ secrets.EMAIL_SMTP_SERVER }}
+          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          NTFY_SERVER_URL: ${{ secrets.NTFY_SERVER_URL }}
+          NTFY_TOKEN: ${{ secrets.NTFY_TOKEN }}
+          BARK_URL: ${{ secrets.BARK_URL }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_ACTIONS: true
+        run: python main.py
+        
+      - name: Commit and push if changes
+        env:
+          BRANCH_NAME: ${{ github.event.repository.default_branch }}
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+          
+          git add -A
+          
+          if git diff --quiet && git diff --staged --quiet; then
+            echo "📭 No changes to commit"
+            exit 0
+          fi
+          
+          echo "📝 Committing changes..."
+          TIMESTAMP=$(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M:%S")
+          git commit -m "Auto update by GitHub Actions at $TIMESTAMP"
+          
+          echo "⬆️ Pushing changes with retry..."
+          for i in {1..5}; do
+            git pull --rebase origin $BRANCH_NAME && git push origin $BRANCH_NAME && {
+              echo "✅ Successfully pushed on attempt $i"
+              exit 0
+            }
+            echo "⚠️ Attempt $i failed, waiting $((i*5)) seconds..."
+            sleep $((i * 5))
+          done
+          
+          echo "❌ Failed to push after 5 attempts"
+          exit 1
